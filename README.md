@@ -1,5 +1,5 @@
 # snwl-capture-api-cannon
-A Python tool to check Capture ATP verdicts and upload file samples via Capture API.
+A Python tool to check Capture ATP verdicts and upload file samples via Capture API. This tool leverages  the SonicWall Capture API library (included with the tool), which can be found on the official SonicWall GitHub: https://github.com/sonicwall
 
 >py snwl-capture-api-cannon.py -h
 
