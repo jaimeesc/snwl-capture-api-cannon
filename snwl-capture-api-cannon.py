@@ -15,6 +15,11 @@
 # About: This Python program was written for internal stress testing
 # 		of the CSa 1000 Capture Appliance and the Capture API.
 #
+# SETUP:
+# 	USE "pip3 install -r requirements.txt" TO INSTALL THE REQUIRED MODULES.
+#	Specifically, you'll need the Requests, urllib3, and Filetype modules.
+#	The other modules should be part of the standard library.
+#
 # The program will rapidly submit file samples via Capture API.
 # Optionally, you can choose to only submit unknown files. The file
 #	samples submitted would be supplied in a configured directory.
@@ -25,6 +30,11 @@
 #	you want to run at once.
 #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# Version 1.0.1:
+# 4/12/2020:
+#	Integrated code that identifies filetype and ignores files that are
+#	not identified or files that don't have a file signature/magic number.
 #
 # Version 1.0.0 - Initial release!
 # 4/8/2020 - 4/10/2020:
@@ -48,7 +58,8 @@ from capture_api import CaptureAPI, file_hash
 from requests.packages import urllib3
 import concurrent.futures
 import threading
-
+import filetype
+from filetype.types import Type
 
 # Hide the certificate warnings.
 urllib3.disable_warnings(exceptions.InsecureRequestWarning)
@@ -161,7 +172,7 @@ if args.ignore_verdict is False:
 	print("Ignore Verdict setting was not provided.")
 	exit()
 elif args.ignore_verdict == "None" or args.ignore_verdict is None:
-	print("MIgnore Verdict setting was not provided.")
+	print("Ignore Verdict setting was not provided.")
 	exit()
 
 if args.number_of_passes is False:
@@ -179,6 +190,46 @@ elif args.number_of_threads == "None" or args.number_of_threads is None:
 	exit()
 
 
+# Create the Dmg file type class
+# Implements the DMG file type matcher.
+# Inherits from filetype.types.Type class.
+# The filetype module does not support DMG so I implemented it here.
+class Dmg(Type):
+	MIME = 'application/octet-stream'
+	EXTENSION = 'dmg'
+	def __init__(self):
+		super(Dmg, self).__init__(
+			mime=Dmg.MIME,
+			extension=Dmg.EXTENSION
+		)
+# Match the file signature/magic number for DMG files.
+	def match(self, buf):
+		return (len(buf) > 1 and buf[0] == 0x78)
+
+# Add the DMG file type
+filetype.add_type(Dmg())
+
+
+# This function filters the empty files and files without a file signature/magic number.
+# Filtering out the these files will avoid trying to submit them to Capture ATP.
+def filter_unidentified_files():
+	filtered_listdir = []
+	for file in os.listdir(os.path.join(args.malware_directory)):
+		if os.path.isfile(os.path.join(args.malware_directory, file)):
+			size = os.path.getsize(os.path.join(args.malware_directory, file))
+			# If the file size is 0, delete the file
+			if size == 0:
+				print("Skipping", file, "because the file size is 0.")
+			else:
+				# If the file size is more than 0, check for the file type
+				kind = filetype.guess(os.path.join(args.malware_directory, file))
+				if kind is not None:
+					filtered_listdir.append(file)
+				else:
+					print("Skipping", file, "because the file doesn't have a file signature/magic number such as a plain text file or file type was not identified.")
+	return filtered_listdir
+
+
 # Get the file size of a given file path in bytes.
 def get_file_size(filepath):
 	size = os.path.getsize(filepath)
@@ -190,20 +241,25 @@ def get_file_size(filepath):
 # Function returns a list of tuples where in each tuple:
 # [0] is the file path, and [1] is the sha256 hash
 def get_file_hashes():
-	file_list = []
+	file_list = [] # Used as a list of tuples to return at the end of the function
+	filtered_listdir = filter_unidentified_files() # List of known files w/o unidentified files.
 	# For each file in the malware folder
-	for file in os.listdir(os.path.join(args.malware_directory)):
-		try:
-			file_path = os.path.join(args.malware_directory, file)
-			sha256 = file_hash("sha256", file_path)
-			file_info = (file_path, sha256)
-			file_list.append(file_info)
-		except:
-			print("\n--Exception in get_file_hashes()!\n",
-				file, "\n", 
-				file_path, "\n",
-				sha256, "\n", 
-				file_info)
+	for file in filtered_listdir:
+		# If the the object is a file.
+		if os.path.isfile(os.path.join(args.malware_directory, file)):
+			# Build the file path, get sha256 hash od the file
+			# Put file path and sha256 hash into a tuple. Append tuple to a list.
+			try:
+				file_path = os.path.join(args.malware_directory, file)
+				sha256 = file_hash("sha256", file_path)
+				file_info = (file_path, sha256)
+				file_list.append(file_info)
+			except:
+				print("\n--Exception in get_file_hashes()!\n",
+					file, "\n", 
+					file_path, "\n",
+					sha256, "\n", 
+					file_info)
 	return file_list
 
 
@@ -222,7 +278,10 @@ def capture_processing(fl):
 #		print("ITEM", i[0], "\nITEM", i[1])
 		try:
 			status_code, report = api_client.file_report(i[1])
-			print("Capture ATP response: File is", report["analysis_result"], "(SHA256:", i[1] + ")")
+			if status_code == 200:
+				print("Capture ATP response: File is", report["analysis_result"], "(SHA256:", i[1] + ")")
+			else:
+				print("Capture ATP response:", report['verbose_msg'], "(" + str(status_code) + ")", "(SHA256:", i[1] + ")")
 #			print(status_code, report)
 		except ValueError as e:
 			print("\nError retrieving Capture ATP file report. ValueError:", e)
@@ -240,9 +299,9 @@ def capture_processing(fl):
 			try:
 				status_code, data = api_client.file_scan(i[0])
 				if status_code == 200:
-					print("\nCapture ATP response:", data['verbose_msg'], "- Scan ID:", data["scan_id"], "(HTTP", str(status_code) + ")")
+					print("\nCapture ATP response:", data['verbose_msg'], "- Scan ID:", data["scan_id"], "(" + str(status_code) + ")")
 				else:
-					print("Capture ATP response:", data['verbose_msg'], "(HTTP", str(status_code) + ")\n")
+					print("Capture ATP response:", data['verbose_msg'], "(" + str(status_code) + ")\n")
 			except ValueError as e:
 				print("\nProblem submitting sample. ValueError:", e)
 			except KeyError as e:
@@ -271,7 +330,10 @@ def capture_process_file(i):
 	api_client = CaptureAPI(args.capture_api_server, args.capture_api_serial, args.capture_api_key)
 	try:
 		status_code, report = api_client.file_report(i[1])
-		print("Capture ATP response: File is", report["analysis_result"], "(SHA256:", i[1] + ")")
+		if status_code == 200:
+			print("Capture ATP response: File is", report["analysis_result"], "(SHA256:", i[1] + ")")
+		else:
+			print("Capture ATP response:", report['verbose_msg'], "(" + str(status_code) + ")", "(SHA256:", i[1] + ")")
 	except ValueError as e:
 		print("\nError retrieving Capture ATP file report. ValueError:", e)
 	except KeyError as e:
@@ -288,7 +350,7 @@ def capture_process_file(i):
 			if status_code == 200:
 				print("Capture ATP response:", data['verbose_msg'], "- Scan ID:", data["scan_id"], "SHA256 hash:", i[1])
 			else:
-				print("Capture ATP response:", data['verbose_msg'], "(HTTP", str(status_code) + ")", "SHA256 hash:", i[1])
+				print("Capture ATP response:", data['verbose_msg'], "(" + str(status_code) + ")", "SHA256 hash:", i[1])
 		except ValueError as e:
 			print("\nProblem submitting sample. ValueError:", e)
 		except KeyError as e:
@@ -320,4 +382,6 @@ def threaded_processing(fl):
 for i in range(0,int(args.number_of_passes)):
 	file_list = get_file_hashes()
 #	capture_processing(file_list) # Single-threaded function.
+	if len(file_list) == 0:
+		print("There are no suitable files in", args.malware_directory)
 	threaded_processing(file_list)
