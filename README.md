@@ -5,8 +5,8 @@ This tool also uses the Filetype module (https://pypi.org/project/filetype/)
 
 Use "pip3 install -r requirements.txt" to quickly install the modules at once. You may need to use an elevated terminal/command prompt.
 
-# Version 1.0.1:
-#	Identify filetype and ignores files that are not identified or files that don't have a file signature/magic number.
+Version 1.0.1:
+Identify filetype and ignores files that are not identified or files that don't have a file signature/magic number.
 
 >py snwl-capture-api-cannon.py -h
 
